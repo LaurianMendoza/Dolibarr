@@ -1,8 +1,11 @@
 <?php
-/* Copyright (C) 2008-2015	Laurent Destailleur <eldy@users.sourceforge.net>
- * Copyright (C) 2011		Regis Houssin		<regis.houssin@inodbox.com>
- * Copyright (C) 2011-2012  Juanjo Menent		<jmenent@2byte.es>
- * Copyright (C) 2015		Jean-François Ferry <jfefe@aternatik.fr>
+/* Copyright (C) 2001-2007 Rodolphe Quiedeville <rodolphe@quiedeville.org>
+ * Copyright (C) 2005      Brice Davoleau       <brice.davoleau@gmail.com>
+ * Copyright (C) 2005-2012 Regis Houssin        <regis.houssin@inodbox.com>
+ * Copyright (C) 2006-2015 Laurent Destailleur  <eldy@users.sourceforge.net>
+ * Copyright (C) 2007      Patrick Raguin  		<patrick.raguin@gmail.com>
+ * Copyright (C) 2010      Juanjo Menent        <jmenent@2byte.es>
+ * Copyright (C) 2015      Marcos García        <marcosgdf@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,205 +22,205 @@
  */
 
 /**
- *	    \file       htdocs/admin/agenda.php
- *      \ingroup    agenda
- *      \brief      Autocreate actions for agenda module setup page
+ *  \file       htdocs/product/agenda.php
+ *  \ingroup    product
+ *  \brief      Page of product events
  */
 
 require '../main.inc.php';
-require_once DOL_DOCUMENT_ROOT.'/core/lib/admin.lib.php';
-require_once DOL_DOCUMENT_ROOT.'/core/lib/agenda.lib.php';
-
-if (!$user->admin) {
-	accessforbidden();
-}
+require_once DOL_DOCUMENT_ROOT.'/contact/class/contact.class.php';
+require_once DOL_DOCUMENT_ROOT.'/compta/facture/class/facture.class.php';
+require_once DOL_DOCUMENT_ROOT.'/core/lib/functions2.lib.php';
+require_once DOL_DOCUMENT_ROOT.'/core/lib/product.lib.php';
 
 // Load translation files required by the page
-$langs->loadLangs(array('admin', 'other', 'agenda'));
+$langs->load("companies");
 
-$action = GETPOST('action', 'aZ09');
-$cancel = GETPOST('cancel', 'alpha');
-
-$search_event = GETPOST('search_event', 'alpha');
-
-// Get list of triggers available
-$triggers = array();
-$sql = "SELECT a.rowid, a.code, a.label, a.elementtype, a.rang as position";
-$sql .= " FROM ".MAIN_DB_PREFIX."c_action_trigger as a";
-$sql .= " ORDER BY a.rang ASC";
-$resql = $db->query($sql);
-if ($resql) {
-	$num = $db->num_rows($resql);
-	$i = 0;
-	while ($i < $num) {
-		$obj = $db->fetch_object($resql);
-		$triggers[$i]['rowid'] = $obj->rowid;
-		$triggers[$i]['code'] 		= $obj->code;
-		$triggers[$i]['element'] = $obj->elementtype;
-		$triggers[$i]['label']		= ($langs->trans("Notify_".$obj->code) != "Notify_".$obj->code ? $langs->trans("Notify_".$obj->code) : $obj->label);
-		$triggers[$i]['position'] = $obj->position;
-
-		$i++;
+if (GETPOST('actioncode', 'array')) {
+	$actioncode = GETPOST('actioncode', 'array', 3);
+	if (!count($actioncode)) {
+		$actioncode = '0';
 	}
-	$db->free($resql);
 } else {
-	dol_print_error($db);
+	$actioncode = GETPOST("actioncode", "alpha", 3) ?GETPOST("actioncode", "alpha", 3) : (GETPOST("actioncode") == '0' ? '0' : (empty($conf->global->AGENDA_DEFAULT_FILTER_TYPE_FOR_OBJECT) ? '' : $conf->global->AGENDA_DEFAULT_FILTER_TYPE_FOR_OBJECT));
+}
+$search_agenda_label = GETPOST('search_agenda_label');
+
+// Security check
+$id = GETPOST('id', 'int');
+$ref = GETPOST('ref', 'alpha');
+if ($user->socid) {
+	$id = $user->socid;
 }
 
-//$triggers = dol_sort_array($triggers, 'code', 'asc', 0, 0, 1);
+$limit = GETPOST('limit', 'int') ?GETPOST('limit', 'int') : $conf->liste_limit;
+$sortfield = GETPOST('sortfield', 'aZ09comma');
+$sortorder = GETPOST('sortorder', 'aZ09comma');
+$page = GETPOSTISSET('pageplusone') ? (GETPOST('pageplusone') - 1) : GETPOST("page", 'int');
+if (empty($page) || $page == -1) {
+	$page = 0;
+}     // If $page is not defined, or '' or -1
+$offset = $limit * $page;
+$pageprev = $page - 1;
+$pagenext = $page + 1;
+if (!$sortfield) {
+	$sortfield = 'a.datep,a.id';
+}
+if (!$sortorder) {
+	$sortorder = 'DESC,DESC';
+}
+
+// Initialize technical object to manage hooks of page. Note that conf->hooks_modules contains array of hook context
+$hookmanager->initHooks(array('agendathirdparty'));
+
+$object = new Product($db);
+if ($id > 0 || !empty($ref)) {
+	$object->fetch($id, $ref);
+}
+
+if ($object->id > 0) {
+	if ($object->type == $object::TYPE_PRODUCT) {
+		restrictedArea($user, 'produit', $object->id, 'product&product', '', '');
+	}
+	if ($object->type == $object::TYPE_SERVICE) {
+		restrictedArea($user, 'service', $object->id, 'product&product', '', '');
+	}
+} else {
+	restrictedArea($user, 'produit|service', 0, 'product&product', '', '');
+}
 
 
 /*
  *	Actions
  */
 
-// Purge search criteria
-if (GETPOST('button_removefilter_x', 'alpha') || GETPOST('button_removefilter.x', 'alpha') || GETPOST('button_removefilter', 'alpha')) { // All tests are required to be compatible with all browsers
-	$search_event = '';
-	$action = '';
+$parameters = array('id'=>$id);
+$reshook = $hookmanager->executeHooks('doActions', $parameters, $object, $action); // Note that $action and $object may have been modified by some hooks
+if ($reshook < 0) {
+	setEventMessages($hookmanager->error, $hookmanager->errors, 'errors');
 }
 
-if (GETPOST('button_search_x', 'alpha') || GETPOST('button_search.x', 'alpha') || GETPOST('button_search', 'alpha')) {	// To avoid the save when we click on search
-	$action = '';
-}
-
-if ($action == "save" && empty($cancel)) {
-	$i = 0;
-
-	$db->begin();
-
-	foreach ($triggers as $trigger) {
-		$keyparam = 'MAIN_AGENDA_ACTIONAUTO_'.$trigger['code'];
-		if ($search_event === '' || preg_match('/'.preg_quote($search_event, '/').'/i', $keyparam)) {
-			$res = dolibarr_set_const($db, $keyparam, (GETPOST($keyparam, 'alpha') ?GETPOST($keyparam, 'alpha') : ''), 'chaine', 0, '', $conf->entity);
-			if (!($res > 0)) {
-				$error++;
-			}
-		}
+if (empty($reshook)) {
+	// Cancel
+	if (GETPOST('cancel', 'alpha') && !empty($backtopage)) {
+		header("Location: ".$backtopage);
+		exit;
 	}
 
-	if (!$error) {
-		setEventMessages($langs->trans("SetupSaved"), null, 'mesgs');
-		$db->commit();
-	} else {
-		setEventMessages($langs->trans("Error"), null, 'errors');
-		$db->rollback();
+	// Purge search criteria
+	if (GETPOST('button_removefilter_x', 'alpha') || GETPOST('button_removefilter.x', 'alpha') || GETPOST('button_removefilter', 'alpha')) { // All tests are required to be compatible with all browsers
+		$actioncode = '';
+		$search_agenda_label = '';
 	}
 }
 
 
 
-/**
- * View
+/*
+ *	View
  */
 
-// $wikihelp = 'EN:Module_Agenda_En|FR:Module_Agenda|ES:Módulo_Agenda';
+$contactstatic = new Contact($db);
 
-$help_url = 'EN:Module_Agenda_En|FR:Module_Agenda|ES:Módulo_Agenda';
+$form = new Form($db);
 
-llxHeader('', $langs->trans("AgendaSetup"), $help_url);
+if ($id > 0 || $ref) {
+	require_once DOL_DOCUMENT_ROOT.'/core/lib/company.lib.php';
+	require_once DOL_DOCUMENT_ROOT.'/product/class/product.class.php';
 
-$linkback = '<a href="'.DOL_URL_ROOT.'/admin/modules.php?restore_lastsearch_values=1">'.$langs->trans("BackToModuleList").'</a>';
-print load_fiche_titre($langs->trans("AgendaSetup"), $linkback, 'title_setup');
+	$langs->load("companies");
 
-print '<form action="'.$_SERVER["PHP_SELF"].'" method="POST">';
-print '<input type="hidden" name="token" value="'.newToken().'">';
-print '<input type="hidden" name="action" value="save">';
 
-$param = '';
-$param .= '&search_event='.urlencode($search_event);
+	$object = new Product($db);
+	$result = $object->fetch($id, $ref);
 
-$head = agenda_prepare_head();
+	$title = $langs->trans("Agenda");
 
-print dol_get_fiche_head($head, 'autoactions', $langs->trans("Agenda"), -1, 'action');
+	$help_url = 'EN:Module_Agenda_En|FR:Module_Agenda';
 
-print '<span class="opacitymedium">'.$langs->trans("AgendaAutoActionDesc")." ".$langs->trans("OnlyActiveElementsAreShown", 'modules.php').'</span><br>';
-print "<br>\n";
+	if (!empty($conf->global->MAIN_HTML_TITLE) && preg_match('/productnameonly/', $conf->global->MAIN_HTML_TITLE) && $object->name) {
+		$title = $object->name." - ".$title;
+	}
+	llxHeader('', $title, $help_url);
 
-print '<div class="div-table-responsive">'; // You can use div-table-responsive-no-min if you dont need reserved height for your table
-print '<table class="noborder centpercent">';
-print '<tr class="liste_titre">';
-print '<td class="liste_titre"><input type="text" name="search_event" value="'.dol_escape_htmltag($search_event).'"></td>';
-print '<td class="liste_titre"></td>';
-// Action column
-print '<td class="liste_titre maxwidthsearch">';
-$searchpicto = $form->showFilterButtons();
-print $searchpicto;
-print '</td>';
-print '</tr>';
-print '</tr>'."\n";
+	if (!empty($conf->notification->enabled)) {
+		$langs->load("mails");
+	}
+	$type = $langs->trans('Product');
+	if ($object->isService()) {
+		$type = $langs->trans('Service');
+	}
 
-print '<tr class="liste_titre">';
-print '<th class="liste_titre" colspan="2">'.$langs->trans("ActionsEvents").'</th>';
-print '<th class="liste_titre"><a href="'.$_SERVER["PHP_SELF"].'?action=selectall'.($param ? $param : '').'">'.$langs->trans("All").'</a>/<a href="'.$_SERVER["PHP_SELF"].'?action=selectnone'.($param ? $param : '').'">'.$langs->trans("None").'</a></th>';
-print '</tr>'."\n";
-// Show each trigger (list is in c_action_trigger)
-if (!empty($triggers)) {
-	foreach ($triggers as $trigger) {
-		$module = $trigger['element'];
-		if ($module == 'order_supplier' || $module == 'invoice_supplier') {
-			$module = 'fournisseur';
-		}
-		if ($module == 'shipping') {
-			$module = 'expedition_bon';
-		}
-		if ($module == 'member') {
-			$module = 'adherent';
-		}
-		if ($module == 'project') {
-			$module = 'projet';
-		}
-		if ($module == 'proposal_supplier') {
-			$module = 'supplier_proposal';
-		}
-		if ($module == 'contact') {
-			$module = 'societe';
-		}
-		if ($module == 'facturerec') {
-			$module = 'facture';
-		}
+	$head = product_prepare_head($object);
 
-		// If 'element' value is myobject@mymodule instead of mymodule
-		$tmparray = explode('@', $module);
-		if (!empty($tmparray[1])) {
-			$module = $tmparray[1];
-		}
+	$titre = $langs->trans("CardProduct".$object->type);
+	$picto = ($object->type == Product::TYPE_SERVICE ? 'service' : 'product');
+	print dol_get_fiche_head($head, 'agenda', $titre, -1, $picto);
 
-		//print 'module='.$module.' code='.$trigger['code'].'<br>';
-		if (!empty($conf->$module->enabled)) {
-			// Discard special case: If option FICHINTER_CLASSIFY_BILLED is not set, we discard both trigger FICHINTER_CLASSIFY_BILLED and FICHINTER_CLASSIFY_UNBILLED
-			if ($trigger['code'] == 'FICHINTER_CLASSIFY_BILLED' && empty($conf->global->FICHINTER_CLASSIFY_BILLED)) {
-				continue;
+	$linkback = '<a href="'.DOL_URL_ROOT.'/product/list.php?restore_lastsearch_values=1">'.$langs->trans("BackToList").'</a>';
+	$object->next_prev_filter = " fk_product_type = ".$object->type;
+
+	$shownav = 1;
+	if ($user->socid && !in_array('product', explode(',', $conf->global->MAIN_MODULES_FOR_EXTERNAL))) {
+		$shownav = 0;
+	}
+
+	dol_banner_tab($object, 'ref', $linkback, $shownav, 'ref');
+
+	print '<div class="fichecenter">';
+
+	print '<div class="underbanner clearboth"></div>';
+
+	$object->info($object->id);
+	dol_print_object_info($object, 1);
+
+	print '</div>';
+
+	print dol_get_fiche_end();
+
+
+
+	// Actions buttons
+
+	$objproduct = $object;
+	$objcon = new stdClass();
+
+	$out = '';
+	$morehtmlcenter = '';
+	if (isModEnabled('agenda')) {
+		$permok = $user->rights->agenda->myactions->create;
+		if ((!empty($objproduct->id) || !empty($objcon->id)) && $permok) {
+			if (get_class($objproduct) == 'Product') {
+				$out .= '&amp;prodid='.$objproduct->id.'&origin=product&originid='.$id;
 			}
-			if ($trigger['code'] == 'FICHINTER_CLASSIFY_UNBILLED' && empty($conf->global->FICHINTER_CLASSIFY_BILLED)) {
-				continue;
-			}
-
-			if ($search_event === '' || preg_match('/'.preg_quote($search_event, '/').'/i', $trigger['code'])) {
-				print '<!-- '.$trigger['position'].' -->';
-				print '<tr class="oddeven">';
-				print '<td>'.$trigger['code'].'</td>';
-				print '<td>'.$trigger['label'].'</td>';
-				print '<td class="right" width="40">';
-				$key = 'MAIN_AGENDA_ACTIONAUTO_'.$trigger['code'];
-				$value = $conf->global->$key;
-				print '<input class="oddeven" type="checkbox" name="'.$key.'" value="1"'.((($action == 'selectall' || $value) && $action != "selectnone") ? ' checked' : '').'>';
-				print '</td></tr>'."\n";
-			}
+			$out .= (!empty($objcon->id) ? '&amp;contactid='.$objcon->id : '').'&amp;backtopage='.$_SERVER["PHP_SELF"].'?id='.$object->id.'&amp;percentage=-1';
 		}
+
+		$linktocreatetimeBtnStatus = !empty($user->rights->agenda->myactions->create) || !empty($user->rights->agenda->allactions->create);
+		$morehtmlcenter = dolGetButtonTitle($langs->trans('AddAction'), '', 'fa fa-plus-circle', DOL_URL_ROOT.'/comm/action/card.php?action=create'.$out, '', $linktocreatetimeBtnStatus);
+	}
+
+	if (isModEnabled('agenda') && (!empty($user->rights->agenda->myactions->read) || !empty($user->rights->agenda->allactions->read))) {
+		print '<br>';
+
+		$param = '&id='.$id;
+		if (!empty($contextpage) && $contextpage != $_SERVER["PHP_SELF"]) {
+			$param .= '&contextpage='.$contextpage;
+		}
+		if ($limit > 0 && $limit != $conf->liste_limit) {
+			$param .= '&limit='.$limit;
+		}
+
+		print_barre_liste($langs->trans("ActionsOnProduct"), 0, $_SERVER["PHP_SELF"], '', $sortfield, $sortorder, '', 0, -1, '', 0, $morehtmlcenter, '', 0, 1, 1);
+
+		// List of all actions
+		$filters = array();
+		$filters['search_agenda_label'] = $search_agenda_label;
+
+		// TODO Replace this with same code than into list.php
+		show_actions_done($conf, $langs, $db, $object, null, 0, $actioncode, '', $filters, $sortfield, $sortorder);
 	}
 }
-print '</table>';
-print '</div>';
-
-print dol_get_fiche_end();
-
-print $form->buttonsSaveCancel("Save", '');
-
-print "</form>\n";
-
-
-print "<br>";
 
 // End of page
 llxFooter();
